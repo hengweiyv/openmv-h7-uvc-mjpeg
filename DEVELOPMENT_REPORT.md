@@ -69,7 +69,7 @@ YUY2 每像素需要 2 字节。320×240×2×30 = 4.608 MB/s，远超上述链�
 
 ## 6. 可复核的数据、文件与局限
 
-最终发布文件：`firmware/openmv-h7-uvc-mjpeg-vflip.bin`，119,484 字节，SHA-256：
+最初稳定发布文件（v1.0.0）：`firmware/openmv-h7-uvc-mjpeg-vflip.bin`，119,484 字节，SHA-256：
 
 ```text
 0699F7FCE193E85A316783D3F1124A74A78B486ADCB850C35D798A6B51ED2FFD
@@ -82,3 +82,15 @@ YUY2 每像素需要 2 字节。320×240×2×30 = 4.608 MB/s，远超上述链�
 ## 7. 项目总结
 
 我把“让 OpenMV 在 Windows 上成为可选摄像头”的想法，逐步收敛为可检验的协议、画质、帧率和方向要求；在风险较高的刷写阶段反复配合实机操作，并用实际画面指出问题。最终用 MJPEG 和 UVC 固件解决了系统识别与带宽限制，在 320×240 达到目标帧率，同时诚实保留了高分辨率未达 30 fps 的结果。这份仓库把固件、源码补丁和测试方法一起公开，方便别人复现、审查和继续改进。
+
+## 8. 后续修订：左右镜像与 Windows Hello 可行性
+
+我在完成上下翻转后又提出左右镜像要求，并询问能否进一步用于 Windows Hello 人脸登录。左右镜像没有改动电脑端软件，而是在分辨率配置后增加 `omv_csi_set_hmirror(1)`，与原有的 `omv_csi_set_vflip(1)` 并用。第一次重新插拔时刷写工具未捕获短暂的 OpenMV DFU 状态，Windows 仍枚举旧 UVC 固件；改用此前成功的刷写运行方式并再次重插后，DFU 记录显示 119,572 字节全部写入。启动后的首帧一度很暗，随后确认镜头前存在遮挡；移开遮挡后能连续抓取实拍画面。320×240 连续 600 帧用时 13.946 秒，平均 43.02 fps，未见帧率退化。
+
+最新版 v1.1.0：`firmware/openmv-h7-uvc-mjpeg-vflip-hmirror.bin`，119,572 字节，SHA-256：
+
+```text
+839498DE1DCE4FA3FBC2AB34ED2602A3B647B2F70EB8C04DEB2147152B609F76
+```
+
+对 Windows Hello，我没有把“已有普通 UVC 视频”误当作“已有生物识别摄像头”。[微软的人脸认证文档](https://learn.microsoft.com/en-us/windows-hardware/design/device-experiences/windows-hello-face-authentication)要求专门配置的近红外成像；其 [UVC 实现指南](https://learn.microsoft.com/en-us/windows-hardware/drivers/stream/uvc-camera-implementation-guide)要求相应的 RGB/IR 视频类型和 Face Auth Profile V2。OpenMV H7 虽有红外补光 LED，但当前固件只有一条彩色 MJPEG 流，没有独立 IR 流，也没有满足 Face Auth Profile 的已验证硬件能力。因此 v1.1.0 不支持 Windows Hello；若要研究该方向，需要先确认或改造红外成像硬件，再实现独立视频流、描述符与认证验证，而不是简单更改设备标识。当前项目没有做这类安全敏感的验证。

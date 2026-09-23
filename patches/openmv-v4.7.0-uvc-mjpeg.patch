@@ -322,7 +322,7 @@ index bda1c4e7..3e2a26aa 100644
    struct usb_endpoint_descriptor uvc_vc_ep;
    struct uvc_control_endpoint_descriptor uvc_vc_cs_ep;
 diff --git a/ports/stm32/uvc/src/main.c b/ports/stm32/uvc/src/main.c
-index 75a70c20..c65d94a6 100644
+index 75a70c20..342b62d1 100644
 --- a/ports/stm32/uvc/src/main.c
 +++ b/ports/stm32/uvc/src/main.c
 @@ -10,14 +10,18 @@
@@ -472,7 +472,7 @@ index 75a70c20..c65d94a6 100644
  
      /* Init Device Library */
      USBD_Init(&hUsbDeviceFS, &FS_Desc, DEVICE_FS);
-@@ -238,47 +280,57 @@ int main()
+@@ -238,47 +280,58 @@ int main()
  
      while (true) {
          while (g_uvc_stream_status == 2) {
@@ -524,6 +524,7 @@ index 75a70c20..c65d94a6 100644
                  }
  
 +                omv_csi_set_vflip(1);
++                omv_csi_set_hmirror(1);
 +                omv_csi_set_framebuffers((videoCommitControl.bFrameIndex <= VS_FRAME_INDEX_3) ? 2 : 1);
 +
                  frame_index = videoCommitControl.bFrameIndex;
