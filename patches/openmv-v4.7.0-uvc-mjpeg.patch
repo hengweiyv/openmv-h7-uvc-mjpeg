@@ -1,0 +1,808 @@
+diff --git a/Makefile b/Makefile
+index d2238823..83f2f7ce 100755
+--- a/Makefile
++++ b/Makefile
+@@ -216,6 +216,77 @@ export MPY_CFLAGS
+ export MPY_MKARGS
+ export USERMOD_OPT
+ 
++# Standalone USB Video Class firmware.  The UVC sources were still shipped in
++# v4.7.0, but their top-level build target had been dropped.  Keep this target
++# deliberately separate from the MicroPython firmware so it can be linked as a
++# small, native USB camera application at OMV_FIRM_ADDR.
++UVC_DIR := ports/stm32/uvc
++UVC_BUILD := $(BUILD)/$(UVC_DIR)
++UVC_CFLAGS := -I$(TOP_DIR)/$(UVC_DIR)/include $(CFLAGS) \
++              -DOMV_UVC_FIRMWARE=1 -DUSE_USB_FS=1 -DUSE_DEVICE_MODE=1 \
++              -DOMV_UVC_TEST_PATTERN=0
++UVC_LDFLAGS := -mthumb \
++               -mcpu=$(CPU) \
++               -mfpu=$(FPU) \
++               -mfloat-abi=hard \
++               -mabi=aapcs-linux \
++               -nostartfiles \
++               -Wl,--print-memory-usage \
++               -Wl,--gc-sections \
++               -Wl,-T$(UVC_BUILD)/stm32.lds \
++               -Wl,-Map=$(UVC_BUILD)/uvc.map
++
++UVC_SRC_C := $(wildcard $(UVC_DIR)/src/*.c)
++UVC_OBJ := $(addprefix $(BUILD)/,$(UVC_SRC_C:.c=.o))
++UVC_OBJ += $(addprefix $(BUILD)/lib/cmsis/src/, \
++	$(STARTUP).o \
++	$(SYSTEM).o \
++)
++UVC_OBJ += $(wildcard $(BUILD)/lib/stm32/$(MCU_SERIES)/src/*.o)
++UVC_OBJ += $(addprefix $(BUILD)/common/, \
++	array.o \
++	fb_alloc.o \
++	mutex.o \
++	omv_csi.o \
++	unaligned_memcpy.o \
++	vospi.o \
++)
++UVC_OBJ += $(wildcard $(BUILD)/drivers/sensors/*.o)
++UVC_OBJ += $(wildcard $(BUILD)/drivers/lepton/src/*.o)
++UVC_OBJ += $(wildcard $(BUILD)/drivers/pixart/src/*.o)
++UVC_OBJ += $(addprefix $(BUILD)/lib/imlib/, \
++	bayer.o \
++	framebuffer.o \
++	fmath.o \
++	imlib.o \
++	jpege.o \
++	rainbow_tab.o \
++	yuv.o \
++)
++UVC_OBJ += $(addprefix $(BUILD)/ports/stm32/, \
++	dma_utils.o \
++	jpeg.o \
++	omv_csi.o \
++	omv_gpio.o \
++	omv_i2c.o \
++	omv_spi.o \
++	stm32_hal_msp.o \
++)
++UVC_OBJ += $(BUILD)/lib/micropython/pins_$(TARGET).o
++
++.PHONY: uvc UVC_OBJS
++UVC_OBJS:
++	$(MAKE) -C $(UVC_DIR) BUILD=$(UVC_BUILD) CFLAGS="$(UVC_CFLAGS) -MMD"
++
++uvc: UVC_OBJS
++	$(CPP) -P -E -I$(COMMON_DIR) -I$(OMV_BOARD_CONFIG_DIR) \
++		$(UVC_DIR)/stm32.ld.S > $(UVC_BUILD)/stm32.lds
++	$(CC) $(UVC_LDFLAGS) $(UVC_OBJ) -o $(FW_DIR)/uvc.elf -lm
++	$(OBJCOPY) -Obinary $(FW_DIR)/uvc.elf $(FW_DIR)/uvc.bin
++	$(PYTHON) $(MKDFU) -D $(DFU_DEVICE) \
++		-b $(OMV_FIRM_ADDR):$(FW_DIR)/uvc.bin $(FW_DIR)/uvc.dfu
++	$(SIZE) $(FW_DIR)/uvc.elf
++
+ clean:
+ 	$(RM) -fr $(BUILD)
+ 
+diff --git a/common/omv_csi.c b/common/omv_csi.c
+index 473a2164..1540c4e0 100644
+--- a/common/omv_csi.c
++++ b/common/omv_csi.c
+@@ -126,6 +126,16 @@ uint16_t resolution[][2] = {
+     {2048, 1536},    /* QXGA      */
+     {2560, 1600},    /* WQXGA     */
+     {2592, 1944},    /* WQXGA2    */
++    {128,  96  },    /* 128x96    */
++    {144,  88  },    /* 144x88    */
++    {160,  80  },    /* 160x80    */
++    {144,  96  },    /* 144x96    */
++    {160,  96  },    /* 160x96    */
++    {160,  100 },    /* 160x100   */
++    {160,  104 },    /* 160x104   */
++    {168,  100 },    /* 168x100   */
++    {208,  80  },    /* 208x80    */
++    {400,  300 },    /* 400x300   */
+ };
+ 
+ omv_csi_t csi = {0};
+diff --git a/common/omv_csi.h b/common/omv_csi.h
+index cf415cf2..765deb56 100644
+--- a/common/omv_csi.h
++++ b/common/omv_csi.h
+@@ -181,6 +181,17 @@ typedef enum {
+     OMV_CSI_FRAMESIZE_QXGA,     // 2048x1536
+     OMV_CSI_FRAMESIZE_WQXGA,    // 2560x1600
+     OMV_CSI_FRAMESIZE_WQXGA2,   // 2592x1944
++    // USB full-speed UVC tuning modes (append to preserve existing IDs).
++    OMV_CSI_FRAMESIZE_128X96,
++    OMV_CSI_FRAMESIZE_144X88,
++    OMV_CSI_FRAMESIZE_160X80,
++    OMV_CSI_FRAMESIZE_144X96,
++    OMV_CSI_FRAMESIZE_160X96,
++    OMV_CSI_FRAMESIZE_160X100,
++    OMV_CSI_FRAMESIZE_160X104,
++    OMV_CSI_FRAMESIZE_168X100,
++    OMV_CSI_FRAMESIZE_208X80,
++    OMV_CSI_FRAMESIZE_400X300,
+ } omv_csi_framesize_t;
+ 
+ typedef enum {
+diff --git a/ports/stm32/uvc/include/usbd_uvc.h b/ports/stm32/uvc/include/usbd_uvc.h
+index 0e6ba462..02305b5a 100644
+--- a/ports/stm32/uvc/include/usbd_uvc.h
++++ b/ports/stm32/uvc/include/usbd_uvc.h
+@@ -60,11 +60,11 @@
+ 
+ #define UVC_IN_EP                               0x81  /* EP1 for data IN */
+ #define UVC_CMD_EP                              0x82  /* EP2 for UVC commands */
+-#define VIDEO_PACKET_SIZE                       ((unsigned int)(960 + 2))
++#define VIDEO_PACKET_SIZE                       ((unsigned int)(1020 + 2))
+ #define VIDEO_MAX_SETUP_PACKET_SIZE             ((unsigned int)(1024))
+ #define CMD_PACKET_SIZE                         ((unsigned int)(8))
+ 
+-#define CAM_FPS                                 120
++#define CAM_FPS                                 30
+ 
+ enum CUST_COMTROL_IDS {
+ 	CUST_CONTROL_COMMAND=0,
+@@ -77,12 +77,13 @@ enum CUST_COMTROL_IDS {
+ };
+ 
+ enum _vs_fmt_indexes {
+-  VS_FMT_INDEX_GREY = 1,
++  VS_FMT_INDEX_MJPEG = 1,
+   VS_FMT_INDEX_YUYV,
++  VS_FMT_INDEX_GREY,
+   VS_FMT_INDEX_RGB565,
+ };
+ 
+-#define VS_NUM_FORMATS 3
++#define VS_NUM_FORMATS 1
+ 
+ enum _vs_fmt_size {
+   VS_FMT_SIZE_YUYV   = 16,
+@@ -100,7 +101,7 @@ enum _vs_fmt_size {
+     'Y',  '1',  '6',  ' ', 0x00, 0x00, 0x10, 0x00, 0x80, 0x00, 0x00, 0xaa, 0x00, 0x38, 0x9b, 0x71
+ 
+ #define VS_FMT_GUID_YUYV \
+-    'U',  'Y',  'V',  'Y', 0x00, 0x00, 0x10, 0x00, 0x80, 0x00, 0x00, 0xaa, 0x00, 0x38, 0x9b, 0x71
++    'Y',  'U',  'Y',  '2', 0x00, 0x00, 0x10, 0x00, 0x80, 0x00, 0x00, 0xaa, 0x00, 0x38, 0x9b, 0x71
+ 
+ #define VS_FMT_GUID_NV12 \
+     'N',  'V',  '1',  '2', 0x00, 0x00, 0x10, 0x00, 0x80, 0x00, 0x00, 0xaa, 0x00, 0x38, 0x9b, 0x71
+@@ -123,6 +124,17 @@ enum _vs_frame_indexes {
+   VS_FRAME_INDEX_2 = 2,
+   VS_FRAME_INDEX_3 = 3,
+   VS_FRAME_INDEX_4 = 4,
++  VS_FRAME_INDEX_5 = 5,
++  VS_FRAME_INDEX_6 = 6,
++  VS_FRAME_INDEX_7 = 7,
++  VS_FRAME_INDEX_8 = 8,
++  VS_FRAME_INDEX_9 = 9,
++  VS_FRAME_INDEX_10 = 10,
++  VS_FRAME_INDEX_11 = 11,
++  VS_FRAME_INDEX_12 = 12,
++  VS_FRAME_INDEX_13 = 13,
++  VS_FRAME_INDEX_14 = 14,
++  VS_FRAME_INDEX_15 = 15,
+ };
+ 
+ #define VS_FRAME_INDEX(NAME) VS_FRAME_INDEX_ ## NAME
+@@ -280,6 +292,7 @@ struct uvc_input_terminal_desc {
+ /* bMaxPower in Configuration Descriptor */
+ #define USB_CONFIG_POWER_MA(mA)                       ((mA)/2)
+ #define MAX_FRAME_SIZE(width, height, bits_per_pixel) ((unsigned long)((width*height*bits_per_pixel)>>3))
++#define MJPEG_MAX_FRAME_SIZE                     (64U * 1024U)
+ #define MIN_BIT_RATE(width, height, bits_per_pixel)   ((unsigned long)(width*height*bits_per_pixel*CAM_FPS))
+ #define MAX_BIT_RATE(width, height, bits_per_pixel)   ((unsigned long)(width*height*bits_per_pixel*CAM_FPS))
+ #define INTERVAL                                      ((unsigned long)(10000000/CAM_FPS))
+@@ -320,6 +333,36 @@ struct uvc_input_terminal_desc {
+   .dwFrameInterval = { INTERVAL },      /* 1,000,000 ns  *100ns -> 10 FPS */ \
+ }
+ 
++#define UVC_FORMAT_MJPEG_DESCRIPTOR(NUM_FRAME_DESCS) { \
++  .bLength = UVC_DT_FORMAT_MJPEG_SIZE, \
++  .bDescriptorType = UVC_CS_INTERFACE, \
++  .bDescriptorSubType = UVC_VS_FORMAT_MJPEG, \
++  .bFormatIndex = VS_FMT_INDEX(MJPEG), \
++  .bNumFrameDescriptors = NUM_FRAME_DESCS, \
++  .bmFlags = 0x00, /* JPEG size varies with scene content. */ \
++  .bDefaultFrameIndex = VS_FRAME_INDEX_1, \
++  .bAspectRatioX = 0, \
++  .bAspectRatioY = 0, \
++  .bmInterlaceFlags = 0, \
++  .bCopyProtect = 0, \
++}
++
++#define UVC_FRAME_MJPEG_FORMAT(FRAME_INDEX, WIDTH, HEIGHT) { \
++  .bLength = UVC_DT_FRAME_MJPEG_SIZE(1), \
++  .bDescriptorType = UVC_CS_INTERFACE, \
++  .bDescriptorSubType = UVC_VS_FRAME_MJPEG, \
++  .bFrameIndex = FRAME_INDEX, \
++  .bmCapabilities = 0x02, \
++  .wWidth = WIDTH, \
++  .wHeight = HEIGHT, \
++  .dwMinBitRate = 8U * 1024U * CAM_FPS, \
++  .dwMaxBitRate = 8U * MJPEG_MAX_FRAME_SIZE * CAM_FPS, \
++  .dwMaxVideoFrameBufferSize = MJPEG_MAX_FRAME_SIZE, \
++  .dwDefaultFrameInterval = INTERVAL, \
++  .bFrameIntervalType = 1, \
++  .dwFrameInterval = { INTERVAL }, \
++}
++
+ #define UVC_COLOR_MATCHING_DESCRIPTOR() { \
+   .bLength = UVC_DT_COLOR_MATCHING_SIZE, \
+   .bDescriptorType = UVC_CS_INTERFACE,  /* CS_INTERFACE */ \
+diff --git a/ports/stm32/uvc/include/uvc.h b/ports/stm32/uvc/include/uvc.h
+index 54be1ce8..7f95d40c 100644
+--- a/ports/stm32/uvc/include/uvc.h
++++ b/ports/stm32/uvc/include/uvc.h
+@@ -518,5 +518,50 @@ struct UVC_FRAMES_FORMAT_UNCOMPRESSED(n) { \
+ 	struct uvc_color_matching_descriptor uvc_vs_color; \
+ } __attribute__ ((packed));
+ 
++/* MJPEG payload descriptors have the same frame fields as uncompressed video,
++ * but a different format descriptor and descriptor subtypes. */
++struct uvc_format_mjpeg {
++	uint8_t bLength;
++	uint8_t bDescriptorType;
++	uint8_t bDescriptorSubType;
++	uint8_t bFormatIndex;
++	uint8_t bNumFrameDescriptors;
++	uint8_t bmFlags;
++	uint8_t bDefaultFrameIndex;
++	uint8_t bAspectRatioX;
++	uint8_t bAspectRatioY;
++	uint8_t bmInterlaceFlags;
++	uint8_t bCopyProtect;
++} __attribute__((packed));
++
++#define UVC_DT_FORMAT_MJPEG_SIZE 11
++#define UVC_DT_FRAME_MJPEG_SIZE(n) (26 + 4 * (n))
++
++#define UVC_FRAME_MJPEG(n) uvc_frame_mjpeg_##n
++#define DECLARE_UVC_FRAME_MJPEG(n) \
++struct UVC_FRAME_MJPEG(n) { \
++	uint8_t bLength; \
++	uint8_t bDescriptorType; \
++	uint8_t bDescriptorSubType; \
++	uint8_t bFrameIndex; \
++	uint8_t bmCapabilities; \
++	uint16_t wWidth; \
++	uint16_t wHeight; \
++	uint32_t dwMinBitRate; \
++	uint32_t dwMaxBitRate; \
++	uint32_t dwMaxVideoFrameBufferSize; \
++	uint32_t dwDefaultFrameInterval; \
++	uint8_t bFrameIntervalType; \
++	uint32_t dwFrameInterval[n]; \
++} __attribute__((packed))
++
++#define UVC_FRAMES_FORMAT_MJPEG(n) uvc_vs_mjpeg_desc_##n
++#define DECLARE_UVC_FRAMES_FORMAT_MJPEG(n) \
++struct UVC_FRAMES_FORMAT_MJPEG(n) { \
++	struct uvc_format_mjpeg uvc_vs_format; \
++	struct UVC_FRAME_MJPEG(1) uvc_vs_frame[n]; \
++	struct uvc_color_matching_descriptor uvc_vs_color; \
++} __attribute__((packed))
++
+ #endif /* __UVC_H */
+ 
+diff --git a/ports/stm32/uvc/include/uvc_desc.h b/ports/stm32/uvc/include/uvc_desc.h
+index bda1c4e7..3e2a26aa 100644
+--- a/ports/stm32/uvc/include/uvc_desc.h
++++ b/ports/stm32/uvc/include/uvc_desc.h
+@@ -20,13 +20,11 @@ DECLARE_UVC_FRAME_UNCOMPRESSED(1);
+ DECLARE_UVC_EXTENSION_UNIT_DESCRIPTOR(1, 4);
+ DECLARE_UVC_EXTENSION_UNIT_DESCRIPTOR(1, 8);
+ DECLARE_UVC_INPUT_HEADER_DESCRIPTOR(1, VS_NUM_FORMATS);
+-DECLARE_UVC_FRAMES_FORMAT_UNCOMPRESSED(3);
+-DECLARE_UVC_FRAMES_FORMAT_UNCOMPRESSED(4);
++DECLARE_UVC_FRAME_MJPEG(1);
++DECLARE_UVC_FRAMES_FORMAT_MJPEG(6);
+ 
+ struct uvc_vs_frames_formats_descriptor {
+-  struct UVC_FRAMES_FORMAT_UNCOMPRESSED(4) uvc_vs_frames_format_1;
+-  struct UVC_FRAMES_FORMAT_UNCOMPRESSED(3) uvc_vs_frames_format_2;
+-  struct UVC_FRAMES_FORMAT_UNCOMPRESSED(3) uvc_vs_frames_format_3;
++  struct UVC_FRAMES_FORMAT_MJPEG(6) uvc_vs_frames_format_1;
+ };
+ 
+ struct usbd_uvc_cfg {
+@@ -37,6 +35,7 @@ struct usbd_uvc_cfg {
+   struct UVC_HEADER_DESCRIPTOR(1) ucv_vc_header;
+   struct uvc_camera_terminal_descriptor uvc_vc_input_terminal;
+   struct uvc_processing_unit_descriptor uvc_vc_processing_unit;
++#if 0
+   struct UVC_EXTENSION_UNIT_DESCRIPTOR(1, 4) uvc_vc_xu_lep_agc;
+   struct UVC_EXTENSION_UNIT_DESCRIPTOR(1, 4) uvc_vc_xu_lep_oem;
+   struct UVC_EXTENSION_UNIT_DESCRIPTOR(1, 8) uvc_vc_xu_lep_rad;
+@@ -44,6 +43,7 @@ struct usbd_uvc_cfg {
+   struct UVC_EXTENSION_UNIT_DESCRIPTOR(1, 4) uvc_vc_xu_lep_vid;
+   struct UVC_EXTENSION_UNIT_DESCRIPTOR(1, 4) uvc_vc_xu_lep_rad_2;
+   struct UVC_EXTENSION_UNIT_DESCRIPTOR(1, 4) uvc_vc_xu_lep_cust;
++#endif
+   struct uvc_output_terminal_descriptor uvc_vc_output_terminal;
+   struct usb_endpoint_descriptor uvc_vc_ep;
+   struct uvc_control_endpoint_descriptor uvc_vc_cs_ep;
+diff --git a/ports/stm32/uvc/src/main.c b/ports/stm32/uvc/src/main.c
+index 75a70c20..c65d94a6 100644
+--- a/ports/stm32/uvc/src/main.c
++++ b/ports/stm32/uvc/src/main.c
+@@ -10,14 +10,18 @@
+  */
+ #include STM32_HAL_H
+ #include <stdbool.h>
++#include <string.h>
+ #include "sdram.h"
+ #include "usbd_core.h"
+ #include "usbd_desc.h"
+ #include "usbd_uvc.h"
+ #include "usbd_uvc_if.h"
+ #include "omv_i2c.h"
++#include "omv_gpio.h"
+ #include "omv_csi.h"
+ #include "framebuffer.h"
++#include "fb_alloc.h"
++#include "imlib.h"
+ #include "omv_boardconfig.h"
+ #if OMV_ENABLE_BOOTLOADER
+ #include "omv_bootconfig.h"
+@@ -140,47 +144,83 @@ static uint8_t uvc_header[2] = { 2, 0 };
+ static uint8_t packet[VIDEO_PACKET_SIZE];
+ uint32_t packet_size = VIDEO_PACKET_SIZE-2;
+ 
++#if OMV_UVC_TEST_PATTERN
++static bool process_test_frame(void)
++{
++    uint32_t width = (videoCommitControl.bFrameIndex == VS_FRAME_INDEX_2) ? 160 : 80;
++    uint32_t height = (videoCommitControl.bFrameIndex == VS_FRAME_INDEX_2) ? 120 : 60;
++    uint32_t frame_bytes = width * height * 2;
++
++    for (uint32_t offset = 0; offset < frame_bytes; offset += packet_size) {
++        packet[0] = 2;
++        packet[1] = uvc_header[1];
++        for (uint32_t i = 0; i < packet_size; i += 2) {
++            uint32_t pixel = (offset + i) / 2;
++            packet[2 + i] = ((pixel % width) * 255) / width;
++            packet[3 + i] = 128;
++        }
++        if (offset + packet_size == frame_bytes) {
++            packet[1] |= 2;
++            uvc_header[1] ^= 1;
++        }
++        while (UVC_Transmit_FS(packet, VIDEO_PACKET_SIZE) != USBD_OK) {
++            __WFI();
++        }
++        if (g_uvc_stream_status != 2) {
++            return false;
++        }
++    }
++    return true;
++}
++#endif
++
+ bool process_frame(image_t *image)
+ {
+-    uint32_t xfer_size = 0;
+-    uint32_t xfer_bytes = 0;
+-    uint8_t *dst = packet + 2;
++    if (image == NULL || image->pixels == NULL || image->w <= 0 || image->h <= 0) {
++        return false;
++    }
+ 
+-    xfer_size = image->w * image->h * image->bpp;
++    // Keep two CSI frame buffers and leave enough framebuffer RAM for the
++    // JPEG bitstream plus the hardware encoder's MCU row scratch buffer.
++    if (fb_avail() < (MJPEG_MAX_FRAME_SIZE + 32768U)) {
++        return false;
++    }
++
++    fb_alloc_mark();
++    image_t jpeg = {
++        .w = image->w,
++        .h = image->h,
++        .pixfmt = PIXFORMAT_JPEG,
++        .size = MJPEG_MAX_FRAME_SIZE,
++        .pixels = fb_alloc(MJPEG_MAX_FRAME_SIZE, FB_ALLOC_CACHE_ALIGN),
++    };
++    bool overflow = jpeg_compress(image, &jpeg, 45, false, JPEG_SUBSAMPLING_422);
++    if (overflow || jpeg.size < 4 || jpeg.size > MJPEG_MAX_FRAME_SIZE) {
++        fb_alloc_free_till_mark();
++        return false;
++    }
+ 
+-    while (xfer_bytes < xfer_size) {
++    for (uint32_t offset = 0; offset < jpeg.size; ) {
++        uint32_t chunk = IM_MIN(packet_size, jpeg.size - offset);
+         packet[0] = uvc_header[0];
+         packet[1] = uvc_header[1];
+-
+-        switch (videoCommitControl.bFormatIndex) {
+-            case VS_FMT_INDEX(GREY): {
+-                for (int i=0; i<packet_size; i++, xfer_bytes+=image->bpp) {
+-                    dst[i+0] = image->pixels[xfer_bytes+0];
+-                }
+-                break;
+-            }
+-            case VS_FMT_INDEX(YUYV):
+-            case VS_FMT_INDEX(RGB565): {
+-                for (int i=0; i<packet_size; i+=2, xfer_bytes+=2) {
+-                    dst[i+0] = image->pixels[xfer_bytes+1];
+-                    dst[i+1] = image->pixels[xfer_bytes+0];
+-                }
+-                break;
+-            }
+-            default:
+-                break;
+-        }
+-
+-        if (xfer_bytes == xfer_size) {
++        memcpy(packet + 2, jpeg.pixels + offset, chunk);
++        offset += chunk;
++        if (offset == jpeg.size) {
+             packet[1] |= 0x2;    // Flag end of frame
+             uvc_header[1] ^= 1;  // Toggle bit 0 for next new frame
+         }
+-
+-        while (UVC_Transmit_FS(packet, VIDEO_PACKET_SIZE) != USBD_OK) {
++        while (UVC_Transmit_FS(packet, chunk + 2) != USBD_OK) {
++            if (g_uvc_stream_status != 2) {
++                fb_alloc_free_till_mark();
++                return false;
++            }
+             __WFI();
+         }
+     }
+ 
++    fb_alloc_free_till_mark();
++
+     if (g_uvc_stream_status != 2 ||
+             frame_index != videoCommitControl.bFrameIndex ||
+             format_index != videoCommitControl.bFormatIndex) {
+@@ -215,6 +255,7 @@ int main()
+     #endif
+ 
+     fb_alloc_init0();
++    omv_gpio_init0();
+     framebuffer_init0();
+     omv_csi_init0();
+ 
+@@ -224,6 +265,7 @@ int main()
+     }
+ 
+     omv_csi_reset();
++    imlib_hardware_jpeg_init();
+ 
+     /* Init Device Library */
+     USBD_Init(&hUsbDeviceFS, &FS_Desc, DEVICE_FS);
+@@ -238,47 +280,57 @@ int main()
+ 
+     while (true) {
+         while (g_uvc_stream_status == 2) {
++#if OMV_UVC_TEST_PATTERN
++            while (process_test_frame()) {
++            }
++#else
+             if (frame_index != videoCommitControl.bFrameIndex ||
+                 format_index != videoCommitControl.bFormatIndex) {
+                 switch (videoCommitControl.bFormatIndex) {
+-                    case VS_FMT_INDEX(YUYV):
++                    case VS_FMT_INDEX(MJPEG):
+                         omv_csi_set_pixformat(PIXFORMAT_YUV422);
+                         break;
+-                    case VS_FMT_INDEX(GREY):
+-                        omv_csi_set_pixformat(PIXFORMAT_GRAYSCALE);
+-                        break;
+-                    case VS_FMT_INDEX(RGB565):
+-                        omv_csi_set_pixformat(PIXFORMAT_RGB565);
+-                        break;
+                     default:
+                         break;
+                 }
+ 
+                 switch (videoCommitControl.bFrameIndex) {
+                     case VS_FRAME_INDEX_1:
+-                        omv_csi_set_framesize(OMV_CSI_FRAMESIZE_QQQVGA);
++                        omv_csi_set_framesize(OMV_CSI_FRAMESIZE_QQVGA);
+                         break;
+                     case VS_FRAME_INDEX_2:
+-                        omv_csi_set_framesize(OMV_CSI_FRAMESIZE_QQVGA);
++                        omv_csi_set_framesize(OMV_CSI_FRAMESIZE_HQVGA);
+                         break;
+                     case VS_FRAME_INDEX_3:
+                         omv_csi_set_framesize(OMV_CSI_FRAMESIZE_QVGA);
+                         break;
+                     case VS_FRAME_INDEX_4:
+-                        omv_csi_set_framesize(OMV_CSI_FRAMESIZE_VGA);
++                        omv_csi_set_framesize(OMV_CSI_FRAMESIZE_CIF);
++                        break;
++                    case VS_FRAME_INDEX_5:
++                        omv_csi_set_framesize(OMV_CSI_FRAMESIZE_400X300);
++                        break;
++                    case VS_FRAME_INDEX_6:
++                        omv_csi_set_framesize(OMV_CSI_FRAMESIZE_HVGA);
+                         break;
+                     default:
+                         break;
+                 }
+ 
++                omv_csi_set_vflip(1);
++                omv_csi_set_framebuffers((videoCommitControl.bFrameIndex <= VS_FRAME_INDEX_3) ? 2 : 1);
++
+                 frame_index = videoCommitControl.bFrameIndex;
+                 format_index = videoCommitControl.bFormatIndex;
+             }
+ 
+             image_t image = {0};
+             do {
+-                csi.snapshot(&csi, &image, 0);
++                if (csi.snapshot(&csi, &image, 0) != 0) {
++                    break;
++                }
+             } while (process_frame(&image));
++#endif
+         }
+     }
+ }
+diff --git a/ports/stm32/uvc/src/stm32_it.c b/ports/stm32/uvc/src/stm32_it.c
+index dba590f5..0faf4535 100644
+--- a/ports/stm32/uvc/src/stm32_it.c
++++ b/ports/stm32/uvc/src/stm32_it.c
+@@ -221,14 +221,12 @@ void DMA2_Stream0_IRQHandler(void)
+     }
+ }
+ 
+-#if 0
+ void DMA2_Stream1_IRQHandler(void)
+ {
+     if (dma_handle[9] != NULL) {
+         HAL_DMA_IRQHandler(dma_handle[9]);
+     }
+ }
+-#endif
+ 
+ void DMA2_Stream2_IRQHandler(void)
+ {
+diff --git a/ports/stm32/uvc/src/usbd_conf.c b/ports/stm32/uvc/src/usbd_conf.c
+index 45465f77..d80abe6d 100644
+--- a/ports/stm32/uvc/src/usbd_conf.c
++++ b/ports/stm32/uvc/src/usbd_conf.c
+@@ -296,7 +296,7 @@ USBD_StatusTypeDef  USBD_LL_Init (USBD_HandleTypeDef *pdev)
+   
+   HAL_PCDEx_SetRxFiFo(&hpcd, 0x2E);
+   HAL_PCDEx_SetTxFiFo(&hpcd, 0, 0x20);
+-  HAL_PCDEx_SetTxFiFo(&hpcd, 1, 0xF2); 
++  HAL_PCDEx_SetTxFiFo(&hpcd, 1, 0x100);
+ 
+ 
+ #endif 
+diff --git a/ports/stm32/uvc/src/usbd_uvc.c b/ports/stm32/uvc/src/usbd_uvc.c
+index f6d3d7fa..4de587bd 100644
+--- a/ports/stm32/uvc/src/usbd_uvc.c
++++ b/ports/stm32/uvc/src/usbd_uvc.c
+@@ -182,13 +182,6 @@ __ALIGN_BEGIN struct usbd_uvc_cfg USBD_UVC_CfgFSDesc __ALIGN_END = {
+         SIZEOF_M(struct usbd_uvc_cfg, ucv_vc_header) +
+         SIZEOF_M(struct usbd_uvc_cfg, uvc_vc_input_terminal) +
+         SIZEOF_M(struct usbd_uvc_cfg, uvc_vc_processing_unit) +
+-        SIZEOF_M(struct usbd_uvc_cfg, uvc_vc_xu_lep_agc) +
+-        SIZEOF_M(struct usbd_uvc_cfg, uvc_vc_xu_lep_oem) +
+-        SIZEOF_M(struct usbd_uvc_cfg, uvc_vc_xu_lep_rad) +
+-        SIZEOF_M(struct usbd_uvc_cfg, uvc_vc_xu_lep_sys) +
+-        SIZEOF_M(struct usbd_uvc_cfg, uvc_vc_xu_lep_vid) +
+-        SIZEOF_M(struct usbd_uvc_cfg, uvc_vc_xu_lep_rad_2) +
+-        SIZEOF_M(struct usbd_uvc_cfg, uvc_vc_xu_lep_cust) +
+         SIZEOF_M(struct usbd_uvc_cfg, uvc_vc_output_terminal), // header+units+terminals
+       .dwClockFrequency = 0x005B8D80,          // 6.000000 MHz
+       .bInCollection = 0x01,                   // 1 one streaming interface
+@@ -226,6 +219,8 @@ __ALIGN_BEGIN struct usbd_uvc_cfg USBD_UVC_CfgFSDesc __ALIGN_END = {
+       .iProcessing = 0x00,                       // String desc index : Not used
+     },
+     
++    /* Legacy thermal-camera extension units are not part of this webcam. */
++#if 0
+     /* Extension Unit Descriptor */
+     .uvc_vc_xu_lep_agc = {
+       .bLength =
+@@ -373,6 +368,7 @@ __ALIGN_BEGIN struct usbd_uvc_cfg USBD_UVC_CfgFSDesc __ALIGN_END = {
+       .iExtension = 0x00,                          // String desc index : Not used
+     },
+     
++#endif
+     /* Output Terminal Descriptor */
+     .uvc_vc_output_terminal = {
+       .bLength = UVC_DT_OUTPUT_TERMINAL_SIZE,      // 9
+@@ -381,7 +377,7 @@ __ALIGN_BEGIN struct usbd_uvc_cfg USBD_UVC_CfgFSDesc __ALIGN_END = {
+       .bTerminalID = VC_OUTPUT_TERMINAL_ID,    // 2 ID of this Terminal
+       .wTerminalType = UVC_TT_STREAMING,           // 0x0101 USB streaming terminal
+       .bAssocTerminal = 0x00,                      // 0 no Terminal associated
+-      .bSourceID = 0x03,                           // 1 input pin connected to output pin unit 1
++      .bSourceID = VC_CONTROL_PU_ID,               // Connect the camera processing unit directly.
+       .iTerminal = 0x00,                           // 0 no description available
+     },
+     
+@@ -438,8 +434,6 @@ __ALIGN_BEGIN struct usbd_uvc_cfg USBD_UVC_CfgFSDesc __ALIGN_END = {
+       .bControlSize = 0x01,                      // 1 one byte bmaControls field size
+       .bmaControls = {
+         { 0x00 },                                // bmaControls(0)           0 no VS specific controls
+-        { 0x00 },                                // bmaControls(1)           0 no VS specific controls
+-        { 0x00 },                                // bmaControls(2)           0 no VS specific controls
+       },
+     },
+ 
+@@ -469,6 +463,7 @@ __ALIGN_BEGIN struct usbd_uvc_cfg USBD_UVC_CfgFSDesc __ALIGN_END = {
+ 
+ };
+ 
++#if 0
+ static struct uvc_vs_frames_formats_descriptor uvc_vs_frames_formats_desc = {
+     .uvc_vs_frames_format_1 =
+       {
+@@ -525,6 +520,23 @@ static struct uvc_vs_frames_formats_descriptor uvc_vs_frames_formats_desc_gs = {
+       },
+ };
+ 
++#endif
++
++static struct uvc_vs_frames_formats_descriptor uvc_vs_frames_formats_desc = {
++    .uvc_vs_frames_format_1 = {
++        .uvc_vs_format = UVC_FORMAT_MJPEG_DESCRIPTOR(6),
++        .uvc_vs_frame = {
++            UVC_FRAME_MJPEG_FORMAT(VS_FRAME_INDEX_1, 160, 120),
++            UVC_FRAME_MJPEG_FORMAT(VS_FRAME_INDEX_2, 240, 160),
++            UVC_FRAME_MJPEG_FORMAT(VS_FRAME_INDEX_3, 320, 240),
++            UVC_FRAME_MJPEG_FORMAT(VS_FRAME_INDEX_4, 352, 288),
++            UVC_FRAME_MJPEG_FORMAT(VS_FRAME_INDEX_5, 400, 300),
++            UVC_FRAME_MJPEG_FORMAT(VS_FRAME_INDEX_6, 480, 320),
++        },
++        .uvc_vs_color = UVC_COLOR_MATCHING_DESCRIPTOR(),
++    },
++};
++
+ /**
+   * @brief  USBD_UVC_Init
+   *         Initialize the UVC interface
+@@ -571,6 +583,7 @@ static uint8_t USBD_UVC_Init(USBD_HandleTypeDef *pdev, uint8_t cfgidx)
+ static uint8_t USBD_UVC_DeInit(USBD_HandleTypeDef *pdev, uint8_t cfgidx)
+ {
+   uint8_t ret = 0;
++  g_uvc_stream_status = 0;
+   
+   /* Open EP IN */
+   USBD_LL_CloseEP(pdev, UVC_IN_EP);
+@@ -652,7 +665,7 @@ static uint8_t USBD_UVC_Setup(USBD_HandleTypeDef *pdev, USBD_SetupReqTypedef *re
+         ifalt = (uint8_t)(req->wValue);
+         // TODO: refactor this to callback user code instead of doing this here
+         if (ifalt == 1) {
+-          g_uvc_stream_status = 1;
++          g_uvc_stream_status = 2;
+         } else {
+           g_uvc_stream_status = 0;
+         }
+@@ -719,11 +732,6 @@ static uint8_t  USBD_UVC_DataOut (USBD_HandleTypeDef *pdev, uint8_t epnum)
+ 
+ static uint8_t  USBD_UVC_SOF (USBD_HandleTypeDef *pdev)
+ {     
+-  if (g_uvc_stream_status == 1) {
+-      USBD_LL_FlushEP(pdev, USB_ENDPOINT_IN(1));
+-      USBD_LL_Transmit(pdev, USB_ENDPOINT_IN(1), (uint8_t*)0x0002, 2);//header
+-      g_uvc_stream_status = 2;
+-  }
+   return USBD_OK;
+ }
+ 
+@@ -767,13 +775,7 @@ static uint8_t  USBD_UVC_EP0_RxReady (USBD_HandleTypeDef *pdev)
+   */
+ static uint8_t  *USBD_UVC_GetFSCfgDesc (uint16_t *length)
+ {
+-  int id = omv_csi_get_id(&csi);
+-
+-  if ((id != MT9V0X2_ID) && (id != MT9V0X4_ID) && (id != HM01B0_ID) && (id != PAJ6100_ID)) {
+-      USBD_UVC_CfgFSDesc.uvc_vs_frames_formats_desc = uvc_vs_frames_formats_desc;
+-  } else {
+-      USBD_UVC_CfgFSDesc.uvc_vs_frames_formats_desc = uvc_vs_frames_formats_desc_gs;
+-  }
++  USBD_UVC_CfgFSDesc.uvc_vs_frames_formats_desc = uvc_vs_frames_formats_desc;
+   *length = sizeof(USBD_UVC_CfgFSDesc);
+   return (uint8_t*)&USBD_UVC_CfgFSDesc;
+ }
+diff --git a/ports/stm32/uvc/src/usbd_uvc_if.c b/ports/stm32/uvc/src/usbd_uvc_if.c
+index aa1ee5ff..1a59a141 100644
+--- a/ports/stm32/uvc/src/usbd_uvc_if.c
++++ b/ports/stm32/uvc/src/usbd_uvc_if.c
+@@ -51,20 +51,21 @@ uint8_t UserTxBufferFS[APP_TX_DATA_SIZE];
+ USBD_HandleTypeDef  *hUsbDevice_0;
+ 
+ extern USBD_HandleTypeDef hUsbDeviceFS;
++extern volatile uint8_t g_uvc_stream_status;
+ 
+ //data array for Video Probe and Commit
+ __ALIGN_BEGIN struct uvc_streaming_control videoCommitControl __ALIGN_END =
+ {
+   .bmHint = 0x00,
+-  .bFormatIndex = VS_FMT_INDEX(GREY),
++  .bFormatIndex = VS_FMT_INDEX(MJPEG),
+   .bFrameIndex = 0x01,
+-  .dwFrameInterval = 0, 
++  .dwFrameInterval = INTERVAL,
+   .wKeyFrameRate = 0,
+   .wPFrameRate = 0,
+   .wCompQuality = 0,
+   .wCompWindowSize = 0,
+   .wDelay = 0,
+-  .dwMaxVideoFrameSize = MAX_FRAME_SIZE(640, 480, 8),
++  .dwMaxVideoFrameSize = MJPEG_MAX_FRAME_SIZE,
+   .dwMaxPayloadTransferSize = VIDEO_PACKET_SIZE,
+   .dwClockFrequency = 0,
+   .bmFramingInfo = 0,
+@@ -76,15 +77,15 @@ __ALIGN_BEGIN struct uvc_streaming_control videoCommitControl __ALIGN_END =
+ __ALIGN_BEGIN struct uvc_streaming_control videoProbeControl __ALIGN_END =
+ {
+   .bmHint = 0x00,
+-  .bFormatIndex = VS_FMT_INDEX(GREY),
++  .bFormatIndex = VS_FMT_INDEX(MJPEG),
+   .bFrameIndex = 0x01,
+-  .dwFrameInterval = 0, 
++  .dwFrameInterval = INTERVAL,
+   .wKeyFrameRate = 0,
+   .wPFrameRate = 0,
+   .wCompQuality = 0,
+   .wCompWindowSize = 0,
+   .wDelay = 0,
+-  .dwMaxVideoFrameSize = MAX_FRAME_SIZE(640, 480, 8),
++  .dwMaxVideoFrameSize = MJPEG_MAX_FRAME_SIZE,
+   .dwMaxPayloadTransferSize = VIDEO_PACKET_SIZE,
+   .dwClockFrequency = 0,
+   .bmFramingInfo = 0,
+@@ -292,22 +293,20 @@ static int8_t UVC_VS_ControlGet(uint8_t cmd, uint8_t* pbuf, uint16_t length, uin
+ 
+       if (cmd == UVC_GET_DEF || cmd == UVC_GET_MIN || cmd == UVC_GET_MAX || cmd == UVC_GET_CUR) {
+         struct uvc_vs_frames_formats_descriptor *frames_formats;
+-        struct UVC_FRAME_UNCOMPRESSED(1) *frame;
++        struct UVC_FRAME_MJPEG(1) *frame;
+         frames_formats = &USBD_UVC_CfgFSDesc.uvc_vs_frames_formats_desc;
+ 
+         switch (videoProbeControl.bFormatIndex) {
+-        case VS_FMT_INDEX(YUYV):
++        case VS_FMT_INDEX(MJPEG):
+           frame = frames_formats->uvc_vs_frames_format_1.uvc_vs_frame;
+           break;
+-        case VS_FMT_INDEX(GREY):
+-          frame = frames_formats->uvc_vs_frames_format_2.uvc_vs_frame;
+-          break;
+-        case VS_FMT_INDEX(RGB565):
+-          frame = frames_formats->uvc_vs_frames_format_3.uvc_vs_frame;
+-          break;
+         default:
+           return USBD_FAIL;
+         }
++        if (videoProbeControl.bFrameIndex < VS_FRAME_INDEX_1 ||
++            videoProbeControl.bFrameIndex > VS_FRAME_INDEX_6) {
++          return USBD_FAIL;
++        }
+         rtnBuf->dwMaxVideoFrameSize = frame[videoProbeControl.bFrameIndex - 1].dwMaxVideoFrameBufferSize;
+       } else {
+         return USBD_FAIL;
+@@ -334,7 +333,9 @@ static int8_t UVC_VS_ControlSet(uint8_t cmd, uint8_t* pbuf, uint16_t length, uin
+   switch (cmd) {
+   case UVC_SET_CUR: {
+     struct uvc_streaming_control *rtnBuf = (struct uvc_streaming_control*)pbuf;
+-    if (rtnBuf->bFormatIndex > VS_NUM_FORMATS) {
++    if (rtnBuf->bFormatIndex != VS_FMT_INDEX(MJPEG) ||
++        rtnBuf->bFrameIndex < VS_FRAME_INDEX_1 ||
++        rtnBuf->bFrameIndex > VS_FRAME_INDEX_6) {
+       return USBD_FAIL;
+     }
+ 
+@@ -392,6 +393,15 @@ uint8_t UVC_Transmit_FS(uint8_t* Buf, uint16_t Len)
+   USBD_UVC_SetTxBuffer(hUsbDevice_0, Buf, Len);   
+   result = USBD_UVC_TransmitPacket(hUsbDevice_0);
+   HAL_NVIC_EnableIRQ(OTG_FS_IRQn);
++  if (result == USBD_OK) {
++    USBD_UVC_HandleTypeDef *state = (USBD_UVC_HandleTypeDef *) hUsbDevice_0->pClassData;
++    while (state->TxState != 0 && g_uvc_stream_status == 2) {
++      __WFI();
++    }
++    if (g_uvc_stream_status != 2) {
++      return USBD_FAIL;
++    }
++  }
+   return result;
+ }
+ 
