@@ -1,49 +1,81 @@
-# OpenMV Cam H7 原生 USB 摄像头（MJPEG）
+# openmv-h7-uvc-mjpeg
 
-这是我把 OpenMV Cam H7（固件目标 `OPENMV4`）改造成 Windows 原生 UVC 摄像头的开发记录。设备通过 Windows 自带的 `usbvideo.sys` 驱动识别，无需 OBS 虚拟摄像头或电脑端转发程序。
+**OpenMV Cam H7 / STM32 UVC MJPEG firmware project.** It turns an OpenMV Cam H7 (`OPENMV4`) into a native USB UVC MJPEG webcam for systems with UVC camera support, including Windows, Linux and macOS. Physical flashing and the capture results below were tested on Windows; Linux and macOS have not been separately tested.
 
-- [完整开发报告](DEVELOPMENT_REPORT.md)：需求、我的工作、调试经过、故障与解决、实测数据和局限。
-- [最新固件 v1.1.0](firmware/openmv-h7-uvc-mjpeg-vflip-hmirror.bin)：已在实机刷入验证，MJPEG、上下翻转与左右镜像已启用；[v1.0.0 旧版](firmware/openmv-h7-uvc-mjpeg-vflip.bin)仍保留供回退。
-- [源码补丁](patches/openmv-v4.7.0-uvc-mjpeg.patch)：基于 [OpenMV v4.7.0](https://github.com/openmv/openmv/tree/v4.7.0)，基础提交 `2206dcb31c2a854c79e83cd62d6b55939f6c351a`。
-- [帧率测试脚本](tools/test-uvc-fps.ps1)：调用本机 FFmpeg/DirectShow，逐档输出 JSON 测试结果。
+The project targets [OpenMV v4.7.0](https://github.com/openmv/openmv/tree/v4.7.0), commit `2206dcb31c2a854c79e83cd62d6b55939f6c351a`. It does not copy the complete OpenMV tree. **[`patches/openmv-v4.7.0-uvc-mjpeg.patch`](patches/openmv-v4.7.0-uvc-mjpeg.patch) is the authoritative integration.** [`src/`](src/) and [`include/`](include/) contain focused C extracts for reading, IDE navigation and GitHub language statistics. They cannot be compiled alone and are not build inputs.
 
-## 已验证结果
+## Features and observed results
 
-| MJPEG 分辨率 | 30 fps 请求下的连续采集结果 | 结论 |
-| --- | ---: | --- |
-| 320×240 | v1.1.0：600 帧 / 13.946 秒，43.02 fps | 达到至少 30 fps |
-| 352×288 | 实验前稳定版：600 帧 / 26.895 秒，22.31 fps | 未达到 30 fps |
-| 400×300 | 实验版：240 帧 / 11.519 秒，20.83 fps | 未达到 30 fps |
-| 480×320 | 实验版：240 帧 / 11.423 秒，21.01 fps | 未达到 30 fps |
+- MJPEG over USB UVC **Full Speed**, using OpenMV's image sensor, framebuffer and hardware JPEG encoder.
+- Six advertised MJPEG sizes: 160×120, 240×160, 320×240, 352×288, 400×300 and 480×320. The UVC descriptor advertises one 30 fps interval for each.
+- Windows enumerated the tested firmware as **OpenMV UVC in FS Mode** through its built-in `usbvideo.sys` driver. Camera and OBS can select it.
+- Current firmware applies vertical flip and horizontal mirror. The v1.1.0 binary was physically flashed and capture-tested.
 
-这些是采集程序实际收到的平均帧率，不是 USB 描述符中的标称值；不同场景、主机负载和采集软件会影响结果。当前已实测达到至少 30 fps 的最高原生分辨率为 **320×240**，不是声称的硬件绝对极限。高分辨率档仍可出画面，但不能当成 30 fps 使用。
+Download [v1.1.0 firmware](firmware/openmv-h7-uvc-mjpeg-vflip-hmirror.bin), or the retained [v1.0.0 firmware](firmware/openmv-h7-uvc-mjpeg-vflip.bin). See [firmware versions and SHA-256 checksums](firmware/README.md) before flashing.
 
-## 构建与刷写
+| Size | Observed host capture | Result at requested 30 fps |
+| --- | --- | --- |
+| 320×240 | v1.1.0: 600 frames / 13.946 s = 43.02 fps | Met or exceeded 30 fps in this test |
+| 352×288 | Earlier stable build: 600 frames / 26.895 s = 22.31 fps | Below 30 fps |
+| 400×300 | Experimental build: 240 frames / 11.519 s = 20.83 fps | Below 30 fps |
+| 480×320 | Experimental build: 240 frames / 11.423 s = 21.01 fps | Below 30 fps |
 
-补丁针对指定的 OpenMV v4.7.0 提交。先在原版源码中应用补丁，再按 OpenMV 官方的 `OPENMV4` 构建环境准备交叉编译器和依赖对象；补丁增加了独立的 `uvc` 目标。构建结果为 `build/bin/uvc.bin`。本仓库不打包 OpenMV 整个上游源码、交叉编译器或 STM32 库。
+These are host-side `frames / elapsed time` observations, not guaranteed USB delivery rates. **43.02 fps differs from the advertised 30 fps interval**; the cause has not been isolated. For tested ≥30 fps performance, choose **320×240**. See the [development report](DEVELOPMENT_REPORT.md) for experiments and limitations.
+
+## Repository layout
+
+| Path | Purpose |
+| --- | --- |
+| [`src/`](src/) and [`include/`](include/) | Focused functions and definitions mirrored from the applied patch; reading only. |
+| [`patches/`](patches/) | Formal integration into the exact OpenMV v4.7.0 tree. |
+| [`firmware/`](firmware/) | Prebuilt firmware; the older v1.0.0 binary remains for comparison. |
+| [`tools/test-uvc-fps.ps1`](tools/test-uvc-fps.ps1) | Windows FFmpeg / DirectShow capture test. |
+| [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | Capture, JPEG, USB and host pipeline. |
+| [`docs/SOURCE_MAP.md`](docs/SOURCE_MAP.md) | Where each reading extract comes from and how to keep it synchronized. |
+| [`DEVELOPMENT_REPORT.md`](DEVELOPMENT_REPORT.md) | Development details and measured results. |
+
+This repository has no GitHub Actions workflow or separate build script. The patch modifies **OpenMV's top-level `Makefile`**; that Makefile stays in the upstream tree.
+
+## Build from source
+
+Use a Linux or WSL build environment with OpenMV v4.7.0's prerequisites: Arm GNU tools (`arm-none-eabi-*`), Python 3, Make, the LLVM toolchain used by upstream, and its submodules. The v4.7.0 Makefile defaults `LLVM_PATH` to `/opt/LLVM-ET-Arm-18.1.3-Linux-x86_64/bin/`; set it to your installation when needed. The Windows capture test requires PowerShell 7 and FFmpeg with DirectShow support. Run the build commands from a parent directory containing this repository and check the exact upstream commit before applying the patch.
 
 ```bash
-git clone --branch v4.7.0 https://github.com/openmv/openmv.git
+git clone --branch v4.7.0 --recursive https://github.com/openmv/openmv.git
 cd openmv
+git rev-parse HEAD  # expected: 2206dcb31c2a854c79e83cd62d6b55939f6c351a
+git apply --check ../openmv-h7-uvc-mjpeg/patches/openmv-v4.7.0-uvc-mjpeg.patch
 git apply ../openmv-h7-uvc-mjpeg/patches/openmv-v4.7.0-uvc-mjpeg.patch
+make TARGET=OPENMV4 submodules
 make TARGET=OPENMV4
 make TARGET=OPENMV4 uvc
 ```
 
-上面是构建路径示意；OpenMV 的完整构建依赖及工具链设置以对应版本说明为准。`uvc` 目标依赖普通构建产生的部分目标文件，不能只在空目录直接运行 `make uvc`。最终固件的 SHA-256 见开发报告。
+The patched `uvc` target produces `build/bin/uvc.bin` plus ELF/DFU artifacts in `build/bin/`. The regular `make TARGET=OPENMV4` prepares OpenMV objects used by that target. Apply and build **inside OpenMV**, never from `src/` or `include/` here. The patch applies cleanly to the specified upstream commit; a complete build still needs its toolchain and submodules.
 
-刷写仅适用于确认过的 **OpenMV Cam H7 / OPENMV4** 设备。先备份原固件并确认设备可以进入 OpenMV DFU；刷写错误型号或分区可能导致设备无法正常启动。实测使用 OpenMV DFU 设备 `37c5:9204` 的分区 `-a 2`，刷写工具等待期间需要重新插拔 USB：
+## Flash and test
 
-```text
-dfu-util -w -d ,37c5:9204 -a 2 -D openmv-h7-uvc-mjpeg-vflip-hmirror.bin -R
+Confirm the board is **OpenMV Cam H7 / `OPENMV4`**, back up firmware or data you need, and confirm its DFU identity. A filename or `OPENMV4` directory is not sufficient proof of compatibility. The tested OpenMV DFU device is `37c5:9204`, alt setting 2. From this repository's root:
+
+```bash
+dfu-util -w -d ,37c5:9204 -a 2 -D firmware/openmv-h7-uvc-mjpeg-vflip-hmirror.bin -R
 ```
 
-正常运行后，Windows 摄像头名称为 `OpenMV UVC in FS Mode`。早期的第三方/旧版 UVC 固件曾导致设备不能正常枚举；请不要仅凭文件名中的 `OPENMV4` 就认为任何旧固件都兼容。
+On Windows, reconnect the USB cable if DFU is waiting for re-enumeration. Check for **OpenMV UVC in FS Mode** in Camera, OBS or a DirectShow device list. With a local FFmpeg installation, run:
 
-## Windows Hello 人脸登录
+```powershell
+./tools/test-uvc-fps.ps1 -Frames 600
+```
 
-当前固件是普通彩色 MJPEG UVC 摄像头，**不支持 Windows Hello 人脸验证**。OpenMV H7 有 850 nm 红外补光 LED，但红外补光灯不等于独立、符合要求的红外视频流。微软的 [Windows Hello 人脸认证说明](https://learn.microsoft.com/en-us/windows-hardware/design/device-experiences/windows-hello-face-authentication)要求专门配置的近红外成像；[UVC 实现指南](https://learn.microsoft.com/en-us/windows-hardware/drivers/stream/uvc-camera-implementation-guide)还说明了 RGB/IR 流、Face Auth Profile V2 和分辨率/帧率门槛。当前设备只输出一条彩色流，最大已发布高度为 320 像素，不能仅靠修改 USB 名称或标志安全地充当 Hello 设备。理论上需要额外的红外成像与相应 UVC/认证开发，本项目没有实现或验证这些条件。
+The script requests MJPEG at 30 fps and emits one compact JSON result per tested size. Linux/macOS users can try a UVC-compatible camera app; this firmware has no reported capture test on those hosts.
 
-## 上游与许可
+## Known limits and roadmap
 
-补丁基于 [OpenMV 项目](https://github.com/openmv/openmv) v4.7.0 的现有 UVC、传感器与图像处理代码，不代表 OpenMV 官方发布。上游文件中的版权与许可声明仍以原项目为准。固件是该代码及其构建依赖的派生二进制，请遵守上游各组件的许可证。
+- USB is **Full Speed**, not High Speed. The tested 352×288 to 480×320 modes did not reach 30 fps.
+- Only MJPEG is exposed. JPEG quality is fixed at 45 and frames have a 64 KiB maximum.
+- This is a standard color webcam. It does **not** provide an IR stream or the face-authentication profile needed for Windows Hello.
+- Next work: measure capture/JPEG/USB timing, reconcile host fps with the descriptor interval, improve larger-mode throughput, and test Linux/macOS hosts.
+
+## License
+
+The patch changes OpenMV source, so original upstream copyright notices and license terms remain relevant. This repository currently has **no top-level `LICENSE` file** and does not claim an independent license for project-owned additions or binaries. Consult [OpenMV's licensing information](https://github.com/openmv/openmv) before reuse; choose a repository-level license before accepting third-party contributions.

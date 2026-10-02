@@ -1,0 +1,12 @@
+build/
+dist/
+*.elf
+*.map
+*.o
+*.d
+*.log
+*.jsonl
+.vscode/
+.idea/
+__pycache__/
+*.pyc

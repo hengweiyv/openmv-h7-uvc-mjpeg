@@ -1,0 +1,11 @@
+# The patch is the formal integration method, but diff syntax is not a source language.
+patches/** linguist-detectable=false
+*.patch linguist-detectable=false
+firmware/** linguist-generated linguist-detectable=false
+*.bin linguist-detectable=false
+*.dfu linguist-detectable=false
+*.hex linguist-detectable=false
+docs/** linguist-documentation
+DEVELOPMENT_REPORT.md linguist-documentation
+build/** linguist-generated linguist-detectable=false
+dist/** linguist-generated linguist-detectable=false
