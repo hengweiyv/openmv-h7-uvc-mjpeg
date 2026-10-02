@@ -1,6 +1,7 @@
 # The patch is the formal integration method, but diff syntax is not a source language.
 patches/** linguist-detectable=false
-*.patch linguist-detectable=false
+# Patches must keep LF when a Windows checkout is built under Linux/WSL.
+*.patch text eol=lf linguist-detectable=false
 firmware/** linguist-generated linguist-detectable=false
 *.bin linguist-detectable=false
 *.dfu linguist-detectable=false

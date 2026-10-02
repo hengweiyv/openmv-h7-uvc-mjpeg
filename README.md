@@ -38,7 +38,7 @@ This repository has no GitHub Actions workflow or separate build script. The pat
 
 ## Build from source
 
-Use a Linux or WSL build environment with OpenMV v4.7.0's prerequisites: Arm GNU tools (`arm-none-eabi-*`), Python 3, Make, the LLVM toolchain used by upstream, and its submodules. The v4.7.0 Makefile defaults `LLVM_PATH` to `/opt/LLVM-ET-Arm-18.1.3-Linux-x86_64/bin/`; set it to your installation when needed. The Windows capture test requires PowerShell 7 and FFmpeg with DirectShow support. Run the build commands from a parent directory containing this repository and check the exact upstream commit before applying the patch.
+Use a Linux or WSL build environment with OpenMV v4.7.0's prerequisites: Arm GNU tools (`arm-none-eabi-*`), a native C compiler for `mpy-cross`, Python 3, Make, and its submodules. The upstream Makefile also defines `LLVM_PATH` for targets using Clang; the `OPENMV4` UVC build below uses Arm GNU tools and the supplied libraries. The Windows capture test requires PowerShell 7 and FFmpeg with DirectShow support. Run the build commands from a parent directory containing this repository and check the exact upstream commit before applying the patch.
 
 ```bash
 git clone --branch v4.7.0 --recursive https://github.com/openmv/openmv.git
@@ -47,11 +47,17 @@ git rev-parse HEAD  # expected: 2206dcb31c2a854c79e83cd62d6b55939f6c351a
 git apply --check ../openmv-h7-uvc-mjpeg/patches/openmv-v4.7.0-uvc-mjpeg.patch
 git apply ../openmv-h7-uvc-mjpeg/patches/openmv-v4.7.0-uvc-mjpeg.patch
 make TARGET=OPENMV4 submodules
+make -C lib/micropython/mpy-cross
+make TARGET=OPENMV4 MICROPYTHON
 make TARGET=OPENMV4
 make TARGET=OPENMV4 uvc
 ```
 
 The patched `uvc` target produces `build/bin/uvc.bin` plus ELF/DFU artifacts in `build/bin/`. The regular `make TARGET=OPENMV4` prepares OpenMV objects used by that target. Apply and build **inside OpenMV**, never from `src/` or `include/` here. The patch applies cleanly to the specified upstream commit; a complete build still needs its toolchain and submodules.
+
+Build `mpy-cross` separately before the top-level firmware build so the native tool does not inherit ARM compilation flags. Prepare the `MICROPYTHON` target before the regular firmware target because the upstream Makefile collects existing MicroPython objects when it is parsed. Patch files are checked out with LF endings to support applying them from WSL after cloning this repository on Windows.
+
+The compile steps were verified on 2026-10-02 using Arm GNU GCC 13.2.1, GNU Make 4.3 and Python 3.12.3 on Ubuntu 24.04.3 LTS / WSL2, with existing dependencies at their pinned revisions. Both the normal firmware and UVC targets completed. The prebuilt firmware files in this repository remain the original hardware-tested artifacts.
 
 ## Flash and test
 
